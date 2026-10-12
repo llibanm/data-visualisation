@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<title>Visu</title>
+	<script type="text/javascript" src="data.js"></script>
+	<script type="text/javascript" src="d3.v7.min.js"></script>
+	<style>
+		.brush .selection { fill: rgba(224,122,31,.18); stroke: #e07a1f; }
+	</style>
+</head>
+<body>
+
+<!-- Compteur + bouton de remise à zéro -->
+<p>
+	<span id="count">Aucune sélection</span>
+	<button id="reset" type="button">Réinitialiser la sélection</button>
+</p>
+
+<!-- Create a div where the graph will take place -->
+<div id="my_dataviz"></div>
+
+<script>
+
+// set the dimensions and margins of the graph
+var margin = {top: 50, right: 30, bottom: 20, left: 50},
+  width = 1300 - margin.left - margin.right,
+  height = 500 - margin.top - margin.bottom;
+
+// append the svg object to the body of the page
+var svg = d3.select("#my_dataviz")
+.append("svg")
+  .attr("width", width + margin.left + margin.right)
+  .attr("height", height + margin.top + margin.bottom)
+.append("g")
+  .attr("transform",
+        "translate(" + margin.left + "," + margin.top + ")");
+
+// Les données viennent de data.js (variable "data"), plus de d3.csv.
+// Dans data.js, "?" = valeur manquante : on la convertit en null.
+var dimensions = Object.keys(data[0]);   // d3.keys n'existe plus en d3 v7
+data.forEach(function(d, i) {
+  d.id = i;                               // identifiant de l'individu (partagé entre les graphiques)
+  dimensions.forEach(function(p) { d[p] = (d[p] === "?") ? null : +d[p]; });
+});
+
+  // For each dimension, I build a linear scale. I store all in a y object
+  var y = {}
+  for (var i in dimensions) {
+    var name = dimensions[i]
+    y[name] = d3.scaleLinear()
+      .domain( d3.extent(data, function(d) { return d[name]; }) )   // extent ignore les null
+      .range([height, 0])
+  }
+
+  // Build the X scale -> it find the best position for each Y axis
+  var x = d3.scalePoint()
+    .range([0, width])
+    .padding(1)
+    .domain(dimensions);
+
+  // The path function take a row of the csv as input, and return x and y coordinates of the line to draw for this raw.
+  // Une valeur manquante (null) interrompt la ligne.
+  function path(d) {
+      return d3.line().defined(function(p) { return p !== null; })(
+        dimensions.map(function(p) { return d[p] === null ? null : [x(p), y[p](d[p])]; }));
+  }
+
+  // Draw the lines
+  var lines = svg
+    .selectAll("myPath")
+    .data(data)
+    .enter().append("path")
+    .attr("d",  path)
+    .style("fill", "none")
+    .style("stroke", "#69b3a2")
+    .style("opacity", 0.5)
+
+  // Draw the axis:
+  var axes = svg.selectAll("myAxis")
+    // For each dimension of the dataset I add a 'g' element:
+    .data(dimensions).enter()
+    .append("g")
+    // I translate this element to its right position on the x axis
+    .attr("transform", function(d) { return "translate(" + x(d) + ")"; })
+    // And I build the axis with the call function
+    .each(function(d) { d3.select(this).call(d3.axisLeft(y[d])); })
+
+  // Add axis title
+  axes.append("text")
+      .style("text-anchor", "middle")
+      .attr("y", -9)
+      .text(function(d) { return d; })
+      .style("fill", "black")
+      .style("font-size", "10px")
+
+
+// =====================================================================
+//  SÉLECTION : un brush vertical sur chaque axe
+// =====================================================================
+// selectedIds : null = aucune sélection, sinon Set des id des individus sélectionnés.
+// C'est cette variable que les autres graphiques (matrice de scatterplots, histogramme)
+// doivent lire pour mettre en surbrillance les mêmes individus.
+var selectedIds = null;
+var ranges = {};    // pour chaque axe ayant un brush : [valeur min, valeur max]
+var brushes = {};
+
+axes.each(function(name) {
+  var brush = d3.brushY()
+    .extent([[-10, 0], [10, height]])             // zone de brush autour de l'axe
+    .on("start brush end", function(event) {
+      if (!event.sourceEvent) return;             // ignore les déplacements faits par le code
+      if (event.selection) ranges[name] = [y[name].invert(event.selection[1]), y[name].invert(event.selection[0])];
+      else delete ranges[name];                   // brush supprimé (clic sur l'axe)
+      // un individu est sélectionné s'il est dans TOUS les brushes actifs
+      var names = Object.keys(ranges);
+      if (names.length === 0) { setSelection(null); return; }
+      var ids = data.filter(function(d) {
+        return names.every(function(n) { return d[n] !== null && d[n] >= ranges[n][0] && d[n] <= ranges[n][1]; });
+      }).map(function(d) { return d.id; });
+      setSelection(ids, true);
+    });
+  brushes[name] = brush;
+  d3.select(this).append("g").attr("class", "brush").call(brush);
+});
+
+// Applique une sélection (liste d'id ou null) et met à jour le graphique.
+//  - appelée par les brushes ci-dessus (fromBrush = true)
+//  - À APPELER AUSSI depuis les autres graphiques : setSelection([3, 17, 42]) ou setSelection(null)
+function setSelection(ids, fromBrush) {
+  selectedIds = (ids === null) ? null : new Set(ids);
+
+  if (!fromBrush) {                               // sélection venant d'un autre graphique : on retire nos brushes
+    ranges = {};
+    axes.each(function(name) { d3.select(this).select(".brush").call(brushes[name].move, null); });
+  }
+
+  lines
+    .style("stroke",       function(d) { return selectedIds === null ? "#69b3a2" : selectedIds.has(d.id) ? "#e07a1f" : "#c3c9d0"; })
+    .style("opacity",      function(d) { return selectedIds === null ? 0.5       : selectedIds.has(d.id) ? 0.95      : 0.3; })
+    .style("stroke-width", function(d) { return selectedIds !== null && selectedIds.has(d.id) ? 1.8 : 1; });
+  if (selectedIds !== null) lines.filter(function(d) { return selectedIds.has(d.id); }).raise();   // sélection au premier plan
+
+  d3.select("#count").text(selectedIds === null ? "Aucune sélection"
+                                                : selectedIds.size + " / " + data.length + " voitures sélectionnées");
+
+  // Prévient les autres graphiques : ils écoutent cet événement pour se mettre à jour
+  document.dispatchEvent(new CustomEvent("selectionchange-cars", { detail: { ids: selectedIds } }));
+}
+
+d3.select("#reset").on("click", function() { setSelection(null); });
+
+</script>
+
+</body>
+</html>
